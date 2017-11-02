@@ -140,6 +140,12 @@ type logicalProps struct {
 	//   WHERE e.dept_id IS NOT NULL
 	foreignKeys []foreignKeyProps
 
+	// An equivilancy group indicates when columns have equivilant
+	// values. equivilancyGroups itself is a list of the groups, where
+	// each group is a columns bitmap. It is derived from foreign keys
+	// and the equalities of joins and filters.
+	equivilancyGroups []bitmap
+
 	// The global query state.
 	state *queryState
 }
@@ -189,6 +195,42 @@ func (p *logicalProps) format(buf *bytes.Buffer, level int) {
 	for _, fkey := range p.foreignKeys {
 		fmt.Fprintf(buf, "%sforeign key: %s -> %s\n", indent, fkey.src, fkey.dest)
 	}
+	if p.equivilancyGroups != nil {
+		buf.WriteString(indent)
+		buf.WriteString("equivilancies:\n")
+		for _, group := range p.equivilancyGroups {
+			buf.WriteString(indent)
+			buf.WriteString("  ")
+			for _, col := range p.columns {
+				if group.get(col.index) {
+					buf.WriteString(" ")
+					if p.requiredOutputVars.get(col.index) {
+						buf.WriteString("+")
+					}
+					if tables := col.tables; len(tables) > 1 {
+						buf.WriteString("{")
+						for j, table := range tables {
+							if j > 0 {
+								buf.WriteString(",")
+							}
+							buf.WriteString(table)
+						}
+						buf.WriteString("}")
+					} else if len(tables) == 1 {
+						buf.WriteString(tables[0])
+					}
+					buf.WriteString(".")
+					buf.WriteString(col.name)
+					buf.WriteString(":")
+					fmt.Fprintf(buf, "%d", col.index)
+					if p.notNullCols.get(col.index) {
+						buf.WriteString("*")
+					}
+				}
+			}
+			buf.WriteByte('\n')
+		}
+	}
 }
 
 func (p *logicalProps) newColumnExpr(name string) *expr {
@@ -209,7 +251,72 @@ func (p *logicalProps) newColumnExprByIndex(index bitmapIndex) *expr {
 	return nil
 }
 
+func (p *logicalProps) addEquivilancy(b bitmap) {
+	if p.equivilancyGroups == nil {
+		p.equivilancyGroups = append(p.equivilancyGroups, b)
+	} else {
+		// FIXME(joey): This is an allocation heavy strategy for running
+		// a merge of all equivilancy groups. A possible alternative
+		// would be to have a map of column to equivilancy group index.
+		// We will still need to do an expensive removal operation.
+		// Gotta think about the best approach more, but for now this
+		// approach is functional.
+		var newEquivilancyGroups []bitmap
+		for _, group := range p.equivilancyGroups {
+			if b|group != 0 {
+				b |= group
+			} else {
+				newEquivilancyGroups = append(newEquivilancyGroups, group)
+			}
+		}
+		newEquivilancyGroups = append(newEquivilancyGroups, b)
+		p.equivilancyGroups = newEquivilancyGroups
+	}
+}
+
+// Yuck.. oh the complexity.
+func (p *logicalProps) mergeEquivilancyGroups(otherProps *logicalProps) {
+	if otherProps.equivilancyGroups == nil {
+		return
+	} else if p.equivilancyGroups == nil {
+		p.equivilancyGroups = otherProps.equivilancyGroups
+		return
+	}
+
+	// Merge two sets of equivilancy groups.
+	groupMapping := make(map[bitmapIndex]int)
+	var newEquivilancyGroups []bitmap
+	for _, group := range p.equivilancyGroups {
+		newIdx := -1
+		// TODO(joey): An alterantive might be to iterate through all of
+		// the existing equivilancy groups and check if any group has
+		// overlap. That is probably more efficient...
+		for _, col := range p.columns {
+			// Find every column in the equivilancy group and check if
+			// it already belongs to a group (via groupMapping). If it
+			// does, merge this group with the existing group.
+			if group.get(col.index) {
+				if idx, ok := groupMapping[col.index]; ok {
+					newEquivilancyGroups[idx] |= group
+					newIdx = idx
+					break
+				}
+			}
+		}
+		// If none of the columns belonged to an existing group, append this new group.
+		if newIdx == -1 {
+			newEquivilancyGroups = append(newEquivilancyGroups, group)
+			newIdx = len(newEquivilancyGroups) - 1
+		}
+		for _, col := range p.columns {
+			groupMapping[col.index] = newIdx
+		}
+	}
+	p.equivilancyGroups = newEquivilancyGroups
+}
+
 // Add additional not-NULL columns based on the filtering expressions.
+// Also formulate any column equivilancies.
 func (p *logicalProps) applyFilters(filters []*expr) {
 	for _, filter := range filters {
 		// TODO(peter): !isNullTolerant(filter)
@@ -217,6 +324,15 @@ func (p *logicalProps) applyFilters(filters []*expr) {
 			i := bitmapIndex(bits.TrailingZeros64(uint64(v)))
 			v.clear(i)
 			p.notNullCols.set(i)
+		}
+		// FIXME(joey): This may not be able to handle nested ANDs with
+		// equivilances.
+		if filter.op == eqOp {
+			left := filter.inputs()[0]
+			right := filter.inputs()[1]
+			if left.op == variableOp && right.op == variableOp {
+				p.addEquivilancy(filter.inputVars)
+			}
 		}
 	}
 }

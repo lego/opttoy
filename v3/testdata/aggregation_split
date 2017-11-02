@@ -1,0 +1,148 @@
+exec
+CREATE TABLE division (
+  division_id INT PRIMARY KEY,
+  sector_id INT
+)
+----
+table division
+  division_id NOT NULL
+  sector_id NULL
+  (division_id) KEY
+
+exec
+CREATE TABLE dealer (
+  dealer_id INT PRIMARY KEY
+)
+----
+table dealer
+  dealer_id NOT NULL
+  (dealer_id) KEY
+
+exec
+CREATE TABLE product (
+  product_id INT PRIMARY KEY,
+  division_id INT REFERENCES division(division_id)
+)
+----
+table product
+  product_id NOT NULL
+  division_id NULL
+  (product_id) KEY
+  (division_id) -> division(division_id)
+
+exec
+CREATE TABLE orders (
+  order_id INT PRIMARY KEY,
+  amount INT,
+  product_id INT REFERENCES product(product_id),
+  dealer_id INT REFERENCES dealer(dealer_id)
+)
+----
+table orders
+  order_id NOT NULL
+  amount NULL
+  product_id NULL
+  dealer_id NULL
+  (order_id) KEY
+  (product_id) -> product(product_id)
+  (dealer_id) -> dealer(dealer_id)
+
+prep
+SELECT SUM(orders.amount)
+FROM orders
+JOIN product
+  ON product.product_id = orders.product_id
+JOIN division
+  ON division.division_id = product.division_id
+GROUP BY division.division_id
+----
+groupBy
+  columns: .column1:8
+  groupings:
+    variable (division.division_id) [in=6]
+  aggregations:
+    func (sum) [in=1]
+      inputs:
+        variable (orders.amount) [in=1]
+  inputs:
+    inner join
+      columns: orders.order_id:0* +orders.amount:1 orders.product_id:2* orders.dealer_id:3 product.product_id:4* product.division_id:5* +division.division_id:6* division.sector_id:7
+      equivilancies:
+          product.division_id:5* +division.division_id:6*
+      filters:
+        comp (=) [in=5-6]
+          inputs:
+            variable (division.division_id) [in=6]
+            variable (product.division_id) [in=5]
+      inputs:
+        inner join
+          columns: +orders.order_id:0* +orders.amount:1 +orders.product_id:2* +orders.dealer_id:3 +product.product_id:4* +product.division_id:5
+          equivilancies:
+              +orders.product_id:2* +product.product_id:4*
+          filters:
+            comp (=) [in=2,4]
+              inputs:
+                variable (product.product_id) [in=4]
+                variable (orders.product_id) [in=2]
+          inputs:
+            scan
+              columns: +orders.order_id:0* +orders.amount:1 +orders.product_id:2 +orders.dealer_id:3
+              key: 0
+              foreign key: 2 -> 4
+            scan
+              columns: +product.product_id:4* +product.division_id:5
+              key: 4
+              foreign key: 5 -> 6
+        scan
+          columns: +division.division_id:6* +division.sector_id:7
+          key: 6
+
+# aggregation_splitting
+# SELECT SUM(orders.amount)
+# FROM orders
+# JOIN product
+#   ON product.product_id = orders.product_id
+# JOIN division
+#   ON division.division_id = product.division_id
+# GROUP BY division.division_id
+# ----
+# groupBy
+#   columns: .column1:8
+#   groupings:
+#     variable (division.division_id) [in=6]
+#   aggregations:
+#     func (sum) [in=1]
+#       inputs:
+#         variable (orders.amount) [in=1]
+#   inputs:
+#     inner join
+#       columns: orders.order_id:0* +orders.amount:1 orders.product_id:2* orders.dealer_id:3 product.product_id:4* product.division_id:5* +division.division_id:6* division.sector_id:7
+#       equivilancies:
+#         division_id,division_id
+#       filters:
+#         comp (=) [in=5-6]
+#           inputs:
+#             variable (division.division_id) [in=6]
+#             variable (product.division_id) [in=5]
+#       inputs:
+#         inner join
+#           columns: +orders.order_id:0* +orders.amount:1 +orders.product_id:2* +orders.dealer_id:3 +product.product_id:4* +product.division_id:5
+#           equivilancies:
+#             product_id,product_id
+#           filters:
+#             comp (=) [in=2,4]
+#               inputs:
+#                 variable (product.product_id) [in=4]
+#                 variable (orders.product_id) [in=2]
+#           inputs:
+#             scan
+#               columns: +orders.order_id:0* +orders.amount:1 +orders.product_id:2 +orders.dealer_id:3
+#               key: 0
+#               foreign key: 2 -> 4
+#             scan
+#               columns: +product.product_id:4* +product.division_id:5
+#               key: 4
+#               foreign key: 5 -> 6
+#         scan
+#           columns: +division.division_id:6* +division.sector_id:7
+#           key: 6

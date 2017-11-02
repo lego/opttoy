@@ -54,6 +54,7 @@ func (s scan) updateProps(e *expr) {
 		}
 	}
 
+	props.equivilancyGroups = nil
 	e.inputVars = 0
 	for _, filter := range e.filters() {
 		e.inputVars |= filter.inputVars

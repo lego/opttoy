@@ -2,6 +2,9 @@ package v3
 
 import (
 	"bytes"
+	"context"
+
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
 func init() {
@@ -46,4 +49,9 @@ func (innerJoin) updateProps(e *expr) {
 	}
 
 	e.props.applyFilters(e.filters())
+
+	for _, input := range e.inputs() {
+		log.Errorf(context.TODO(), "Inputs here:\n=====%s\n======\n", e.String())
+		e.props.mergeEquivilancyGroups(input.props)
+	}
 }
